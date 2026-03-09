@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nebula Agent Lobby</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a12;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Courier New', monospace;
+    }
+
+    h1 {
+      color: #f5d06e;
+      font-size: 22px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      text-shadow:
+        2px 2px 0 #7a3e00,
+        0 0 20px #f5a623,
+        0 0 40px #f5a62366;
+      margin-bottom: 16px;
+    }
+
+    #canvas-wrapper {
+      position: relative;
+      width: 1024px;
+      height: 640px;
+      border: 3px solid #4a3520;
+      box-shadow:
+        0 0 0 2px #1a0e05,
+        0 0 30px #f5a62340,
+        0 0 60px #00000088;
+    }
+
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    #tooltip {
+      position: absolute;
+      background: rgba(10, 8, 20, 0.92);
+      border: 1px solid #f5d06e;
+      color: #f5d06e;
+      font-size: 12px;
+      letter-spacing: 1px;
+      padding: 5px 10px;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+      box-shadow: 0 0 10px #f5a62366;
+      z-index: 10;
+    }
+
+    #footer {
+      color: #4a3a28;
+      font-size: 11px;
+      letter-spacing: 2px;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>&#9670; Nebula Agent Lobby &#9670;</h1>
+
+  <div id="canvas-wrapper">
+    <canvas id="lobby" width="512" height="320" style="width:1024px;height:640px;"></canvas>
+    <div id="tooltip"></div>
+  </div>
+
+  <div id="footer">8 agents online &bull; guild hall v2.0</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const canvas = document.getElementById('lobby');
+  const ctx    = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  const W = 512, H = 320;
+
+  // ── Agent Definitions (updated sprite paths) ─────────────
+  const AGENTS = [
+    { name: 'Nebula',      cls: 'Mage',      src: 'assets/sprite_1.png',       color: '#8855ff' },
+    { name: 'PR Monitor',  cls: 'Knight',    src: 'assets/sprite_2.png',     color: '#aaaacc' },
+    { name: 'Deploy Mon',  cls: 'Archer',    src: 'assets/sprite_3.png',     color: '#55aa55' },
+    { name: 'Sprint',      cls: 'Druid',     src: 'assets/sprite_4.png',      color: '#88cc44' },
+    { name: 'Web Agent',   cls: 'Rogue',     src: 'assets/sprite_5.png',      color: '#334466' },
+    { name: 'Code Agent',  cls: 'Artificer', src: 'assets/sprite_6.png',  color: '#cc8833' },
+    { name: 'Media',       cls: 'Bard',      src: 'assets/sprite_7.png',       color: '#dd4477' },
+    { name: 'Inbox',       cls: 'Healer',    src: 'assets/sprite_8.png',     color: '#eedd88' },
+  ];
+
+  const FLOOR   = { x: 50, y: 100, w: 412, h: 180 };
+  const PILLARS = [
+    { x: 52,  y: 98, w: 28, h: 60 },
+    { x: 432, y: 98, w: 28, h: 60 },
+  ];
+
+  const SPRITE_SCALE = 3;
+  const SPRITE_SIZE  = 16;
+  const DISP_SIZE    = SPRITE_SIZE * SPRITE_SCALE; // 48px
+
+  const torches = [
+    { x: 80,  y: 92, flicker: 1.0 },
+    { x: 432, y: 92, flicker: 1.0 },
+  ];
+
+  // ── Particle system ──────────────────────────────────────
+  const particles = [];
+
+  function spawnDust(x, y) {
+    for (let i = 0; i < 5; i++) {
+      particles.push({
+        x,
+        y,
+        vx: (Math.random() - 0.5) * 14,
+        vy: -Math.random() * 6 - 1,
+        life: 1.0,
+        maxLife: 0.45 + Math.random() * 0.25,
+        size: 1.5 + Math.random() * 2,
+      });
+    }
+  }
+
+  function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x    += p.vx * dt;
+      p.y    += p.vy * dt;
+      p.vy   += 18 * dt; // gravity
+      p.vx   *= 0.88;
+      p.life -= dt / p.maxLife;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const alpha = Math.max(0, p.life) * 0.7;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#c8b89a';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1.0;
+  }
+
+  // ── Helpers ──────────────────────────────────────────────
+  function rand(min, max) { return min + Math.random() * (max - min); }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function inPillar(px, py) {
+    for (const p of PILLARS) {
+      if (px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h) return true;
+    }
+    return false;
+  }
+
+  function randomFloorPos() {
+    let attempts = 0;
+    while (attempts++ < 200) {
+      const x = rand(FLOOR.x + DISP_SIZE / 2, FLOOR.x + FLOOR.w - DISP_SIZE / 2);
+      const y = rand(FLOOR.y + DISP_SIZE / 2, FLOOR.y + FLOOR.h - DISP_SIZE / 2);
+      if (!inPillar(x, y)) return { x, y };
+    }
+    return { x: FLOOR.x + FLOOR.w / 2, y: FLOOR.y + FLOOR.h / 2 };
+  }
+
+  // ── Character factory ────────────────────────────────────
+  function makeCharacter(agent, img) {
+    const pos = randomFloorPos();
+    return {
+      name:        agent.name,
+      cls:         agent.cls,
+      label:       agent.name,
+      color:       agent.color,
+      img,
+      x:           pos.x,
+      y:           pos.y,
+      tx:          pos.x,
+      ty:          pos.y,
+      speed:       rand(18, 30),
+      state:       'idle',
+      stateTimer:  rand(1, 3),
+      bobPhase:    rand(0, Math.PI * 2),
+      bobSpeed:    rand(4, 7),
+      facing:      1,
+      bobY:        0,          // current bob offset
+      prevBobY:    0,          // previous frame bob (for landing detection)
+      landed:      false,
+      // Squash & stretch
+      scaleX:      1.0,
+      scaleY:      1.0,
+    };
+  }
+
+  function loadImage(src) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload  = () => resolve({ ok: true,  img });
+      img.onerror = () => resolve({ ok: false, img: null });
+      img.src = src;
+    });
+  }
+
+  // ── Background drawing ───────────────────────────────────
+  function drawBackground(t) {
+    ctx.fillStyle = '#2a1f0e';
+    ctx.fillRect(0, 0, W, H);
+
+    // Back wall stone blocks
+    for (let row = 0; row < 6; row++) {
+      for (let col = 0; col < 9; col++) {
+        const bw = 58, bh = 16;
+        const ox = (row % 2 === 0) ? 0 : 29;
+        const bx = col * bw + ox - 10;
+        const by = 4 + row * bh;
+        ctx.fillStyle = (row + col) % 2 === 0 ? '#4a3a2a' : '#3e3020';
+        ctx.fillRect(bx, by, bw - 1, bh - 1);
+      }
+    }
+    ctx.fillStyle = '#2a1e10';
+    for (let row = 0; row <= 6; row++) ctx.fillRect(0, 4 + row * 16, W, 1);
+
+    // Side walls
+    ctx.fillStyle = '#332515';
+    ctx.fillRect(0, 0, 50, H);
+    ctx.fillRect(462, 0, 50, H);
+    ctx.fillStyle = '#2a1c0a';
+    for (let i = 0; i <= 50; i += 8) {
+      ctx.fillRect(i, 0, 1, H);
+      ctx.fillRect(462 + i, 0, 1, H);
+    }
+
+    // Floor
+    const floorTop = 98;
+    ctx.fillStyle = '#5a5048';
+    ctx.fillRect(0, floorTop, W, H - floorTop);
+    const tileW = 32, tileH = 20;
+    for (let row = 0; row < 12; row++) {
+      for (let col = 0; col < 17; col++) {
+        const tx = col * tileW;
+        const ty = floorTop + row * tileH;
+        const shade = Math.min(255, 80 + row * 8);
+        ctx.fillStyle = `rgb(${shade - 10},${shade - 18},${shade - 22})`;
+        ctx.fillRect(tx + 1, ty + 1, tileW - 2, tileH - 2);
+      }
+    }
+    ctx.fillStyle = '#2e2820';
+    for (let row = 0; row <= 12; row++) ctx.fillRect(0, floorTop + row * tileH, W, 1);
+    for (let col = 0; col <= 17; col++) ctx.fillRect(col * tileW, floorTop, 1, H - floorTop);
+
+    drawRug();
+    drawDoor();
+    drawPillars();
+    drawTorch(torches[0], t);
+    drawTorch(torches[1], t);
+  }
+
+  function drawRug() {
+    const rx = 160, ry = 140, rw = 192, rh = 100;
+    ctx.fillStyle = '#8b1a1a';
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = '#c8a020';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rx + 3, ry + 3, rw - 6, rh - 6);
+    ctx.strokeRect(rx + 6, ry + 6, rw - 12, rh - 12);
+    ctx.fillStyle = '#c8a020';
+    const dStep = 16;
+    for (let dy = ry + 16; dy < ry + rh - 8; dy += dStep) {
+      for (let dx = rx + 16; dx < rx + rw - 8; dx += dStep) {
+        ctx.beginPath();
+        ctx.moveTo(dx, dy - 5);
+        ctx.lineTo(dx + 5, dy);
+        ctx.lineTo(dx, dy + 5);
+        ctx.lineTo(dx - 5, dy);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.fillStyle = '#c8a020';
+    [[rx+4,ry+4],[rx+rw-4,ry+4],[rx+4,ry+rh-4],[rx+rw-4,ry+rh-4]].forEach(([cx,cy]) => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  function drawDoor() {
+    const dx = 218, dy = 4, dw = 76, dh = 70;
+    ctx.fillStyle = '#2e2218'; ctx.fillRect(dx - 4, dy, dw + 8, dh + 4);
+    ctx.fillStyle = '#5c3a10'; ctx.fillRect(dx, dy + 2, dw, dh);
+    ctx.fillStyle = '#4a2e0a';
+    for (let i = 0; i < 4; i++) ctx.fillRect(dx + i * 20, dy + 2, 18, dh);
+    ctx.fillStyle = '#2e2218';
+    ctx.beginPath(); ctx.arc(dx + dw / 2, dy + 22, dw / 2 + 4, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#4a2e0a';
+    ctx.beginPath(); ctx.arc(dx + dw / 2, dy + 22, dw / 2 - 1, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#888';
+    ctx.fillRect(dx + 2, dy + 14, 8, 5); ctx.fillRect(dx + dw - 10, dy + 14, 8, 5);
+    ctx.fillRect(dx + 2, dy + 44, 8, 5); ctx.fillRect(dx + dw - 10, dy + 44, 8, 5);
+    ctx.fillStyle = '#d4a820';
+    ctx.beginPath(); ctx.arc(dx + dw / 2, dy + 38, 4, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function drawPillars() {
+    [{ x: 50, y: 95 }, { x: 434, y: 95 }].forEach(({ x, y }) => {
+      const pw = 28, ph = 90;
+      ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x + 4, y + 4, pw, ph);
+      ctx.fillStyle = '#6a5a48';         ctx.fillRect(x, y, pw, ph);
+      ctx.fillStyle = '#8a7a68';         ctx.fillRect(x, y, 4, ph);
+      ctx.fillStyle = '#4a3a28';         ctx.fillRect(x + pw - 4, y, 4, ph);
+      ctx.fillStyle = '#4a3a28';
+      ctx.fillRect(x, y + 10, pw, 5);
+      ctx.fillRect(x, y + ph - 15, pw, 5);
+      ctx.fillStyle = '#7a6a58';
+      ctx.fillRect(x - 3, y, pw + 6, 10);
+      ctx.fillRect(x - 3, y + ph - 10, pw + 6, 10);
+    });
+  }
+
+  function drawTorch(torch, t) {
+    const { x, y } = torch;
+    ctx.fillStyle = '#555';
+    ctx.fillRect(x - 3, y + 8, 6, 10);
+    ctx.fillRect(x - 1, y + 6, 2, 14);
+    const flicker = 0.7 + 0.3 * Math.sin(t * 12 + x) + 0.15 * Math.sin(t * 20 + x * 0.7);
+    const fw = Math.round(5 * flicker);
+    const fh = Math.round(10 * flicker);
+    const grd = ctx.createRadialGradient(x, y, 1, x, y, 22);
+    grd.addColorStop(0, 'rgba(255,160,30,0.35)');
+    grd.addColorStop(1, 'rgba(255,100,0,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ff2200'; ctx.fillRect(x - 2, y - 2, 4, 6);
+    ctx.fillStyle = '#ff8800'; ctx.fillRect(x - fw + 1, y - fh + 2, fw * 2 - 2, fh);
+    ctx.fillStyle = '#ffdd00'; ctx.fillRect(x - 1, y - fh - 1, 2, 4);
+    ctx.fillStyle = '#ffffaa'; ctx.fillRect(x - 1, y - 3, 2, 4);
+  }
+
+  function drawVignette() {
+    const grd = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.9);
+    grd.addColorStop(0, 'rgba(0,0,0,0)');
+    grd.addColorStop(1, 'rgba(0,0,0,0.65)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ── Draw elliptical floor shadow ─────────────────────────
+  function drawShadow(ch) {
+    // Shadow shrinks when character is higher in bob ("in air")
+    const bobAmt = Math.abs(ch.bobY);  // 0 = on ground, positive = in air
+    const maxBob = DISP_SIZE * 0.3;
+    const t = clamp(bobAmt / maxBob, 0, 1);
+    const shadowW = DISP_SIZE * 0.55 * (1 - t * 0.4);
+    const shadowH = 5 * (1 - t * 0.5);
+    const alpha   = 0.45 * (1 - t * 0.35);
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(ch.x, ch.y + DISP_SIZE * 0.45, shadowW, shadowH, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ── Draw character with squash & stretch ─────────────────
+  function drawCharacter(ch, t) {
+    // Bob: parabolic feel — use sine but map to feel heavier at bottom
+    const rawBob   = Math.sin(t * ch.bobSpeed + ch.bobPhase);
+    // When walking, use bigger arc; idle = gentle
+    const bobAmp   = ch.state === 'walking' ? DISP_SIZE * 0.18 : DISP_SIZE * 0.04;
+    ch.bobY        = rawBob * bobAmp;
+
+    // Squash & stretch based on vertical velocity
+    const bobVel = ch.bobY - ch.prevBobY;  // positive = moving down
+    ch.prevBobY  = ch.bobY;
+
+    // Stretch when going up, squash when landing (moving down fast)
+    let sx = 1.0, sy = 1.0;
+    if (ch.state === 'walking') {
+      if (bobVel < -0.1) {
+        // Rising — stretch vertically
+        const stretch = clamp(Math.abs(bobVel) * 0.8, 0, 0.2);
+        sx = 1.0 - stretch * 0.5;
+        sy = 1.0 + stretch;
+      } else if (bobVel > 0.1 && ch.bobY > bobAmp * 0.6) {
+        // Landing — squash
+        const squash = clamp(bobVel * 0.6, 0, 0.2);
+        sx = 1.0 + squash;
+        sy = 1.0 - squash * 0.6;
+      }
+    }
+
+    // Smooth scale toward target
+    ch.scaleX += (sx - ch.scaleX) * 0.3;
+    ch.scaleY += (sy - ch.scaleY) * 0.3;
+
+    // Landing dust: spawn when bob crosses bottom threshold going downward
+    if (ch.state === 'walking' && bobVel > 0.3 && ch.bobY > bobAmp * 0.7 && !ch.landed) {
+      spawnDust(ch.x, ch.y + DISP_SIZE * 0.45);
+      ch.landed = true;
+    }
+    if (ch.bobY < 0) ch.landed = false;
+
+    // Draw floor shadow BEFORE the sprite
+    drawShadow(ch);
+
+    const drawX = ch.x;
+    const drawY = ch.y + ch.bobY;
+
+    ctx.save();
+
+    // Apply facing + squash/stretch transform around character center
+    ctx.translate(drawX, drawY);
+    ctx.scale(ch.facing * ch.scaleX, ch.scaleY);
+    ctx.translate(-drawX, -drawY);
+
+    if (ch.img) {
+      ctx.drawImage(
+        ch.img,
+        drawX - DISP_SIZE / 2,
+        drawY - DISP_SIZE / 2,
+        DISP_SIZE,
+        DISP_SIZE
+      );
+    } else {
+      // Fallback colored block
+      ctx.fillStyle = ch.color;
+      ctx.fillRect(drawX - DISP_SIZE / 2 + 4, drawY - DISP_SIZE / 2 + 4, DISP_SIZE - 8, DISP_SIZE - 8);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(ch.cls[0], drawX, drawY + 4);
+    }
+
+    ctx.restore();
+
+    // Name label (always upright, below sprite)
+    const labelY = ch.y + DISP_SIZE * 0.5 + 8;
+    ctx.font = '6px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillText(ch.label, ch.x + 1, labelY + 1);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(ch.label, ch.x, labelY);
+  }
+
+  // ── Character AI ─────────────────────────────────────────
+  function updateCharacter(ch, dt) {
+    ch.stateTimer -= dt;
+
+    if (ch.state === 'idle') {
+      if (ch.stateTimer <= 0) {
+        const target = randomFloorPos();
+        ch.tx = target.x;
+        ch.ty = target.y;
+        ch.state = 'walking';
+        ch.stateTimer = rand(3, 5);
+      }
+    } else if (ch.state === 'walking') {
+      const dx   = ch.tx - ch.x;
+      const dy   = ch.ty - ch.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < 1.5 || ch.stateTimer <= 0) {
+        ch.x = ch.tx;
+        ch.y = ch.ty;
+        ch.state = 'idle';
+        ch.stateTimer = rand(2, 4);
+      } else {
+        const step = ch.speed * dt;
+        const move = Math.min(step, dist);
+        ch.x += (dx / dist) * move;
+        ch.y += (dy / dist) * move;
+        ch.x = clamp(ch.x, FLOOR.x + DISP_SIZE / 2, FLOOR.x + FLOOR.w - DISP_SIZE / 2);
+        ch.y = clamp(ch.y, FLOOR.y + DISP_SIZE / 2, FLOOR.y + FLOOR.h - DISP_SIZE / 2);
+        if (Math.abs(dx) > 0.5) ch.facing = dx > 0 ? 1 : -1;
+      }
+    }
+  }
+
+  // ── Tooltip ──────────────────────────────────────────────
+  const tooltip = document.getElementById('tooltip');
+  const wrapper = document.getElementById('canvas-wrapper');
+  let mouseX = -999, mouseY = -999;
+
+  function toLogical(screenX, screenY) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (screenX - rect.left) * (W / rect.width),
+      y: (screenY - rect.top)  * (H / rect.height),
+    };
+  }
+
+  canvas.addEventListener('mousemove', (e) => {
+    const pos = toLogical(e.clientX, e.clientY);
+    mouseX = pos.x; mouseY = pos.y;
+    let hovered = null;
+    for (const ch of characters) {
+      const hw = DISP_SIZE / 2 + 4;
+      if (Math.abs(ch.x - mouseX) < hw && Math.abs(ch.y - mouseY) < hw) { hovered = ch; break; }
+    }
+    if (hovered) {
+      tooltip.style.display = 'block';
+      const rect = canvas.getBoundingClientRect();
+      const wrapRect = wrapper.getBoundingClientRect();
+      const scaleX = rect.width  / W;
+      const scaleY = rect.height / H;
+      tooltip.style.left = ((hovered.x * scaleX) + (rect.left - wrapRect.left) + 4) + 'px';
+      tooltip.style.top  = (((hovered.y - DISP_SIZE / 2 - 12) * scaleY) + (rect.top - wrapRect.top)) + 'px';
+      tooltip.textContent = `${hovered.name}  ·  ${hovered.cls}`;
+    } else {
+      tooltip.style.display = 'none';
+    }
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    tooltip.style.display = 'none';
+    mouseX = mouseY = -999;
+  });
+
+  // ── Main loop ────────────────────────────────────────────
+  let characters = [];
+  let lastTime   = null;
+
+  function loop(timestamp) {
+    if (lastTime === null) lastTime = timestamp;
+    const dt = Math.min((timestamp - lastTime) / 1000, 0.1);
+    lastTime = timestamp;
+    const t  = timestamp / 1000;
+
+    torches.forEach(torch => { torch.flicker = 0.8 + 0.2 * Math.random(); });
+
+    ctx.clearRect(0, 0, W, H);
+    drawBackground(t);
+
+    // Y-sort for depth
+    const sorted = [...characters].sort((a, b) => a.y - b.y);
+    characters.forEach(ch => updateCharacter(ch, dt));
+    updateParticles(dt);
+
+    // Draw shadows first (all below characters)
+    sorted.forEach(ch => drawShadow(ch));
+
+    // Draw particles (floor level, behind characters)
+    drawParticles();
+
+    // Draw characters (shadow is also drawn inside drawCharacter but we skip it here
+    // by drawing only the sprite portion)
+    sorted.forEach(ch => {
+      const rawBob = Math.sin(t * ch.bobSpeed + ch.bobPhase);
+      const bobAmp = ch.state === 'walking' ? DISP_SIZE * 0.18 : DISP_SIZE * 0.04;
+      ch.bobY = rawBob * bobAmp;
+
+      const bobVel = ch.bobY - (ch.prevBobY || 0);
+      ch.prevBobY  = ch.bobY;
+
+      let sx = 1.0, sy = 1.0;
+      if (ch.state === 'walking') {
+        if (bobVel < -0.1) {
+          const stretch = clamp(Math.abs(bobVel) * 0.8, 0, 0.2);
+          sx = 1.0 - stretch * 0.5;
+          sy = 1.0 + stretch;
+        } else if (bobVel > 0.1 && ch.bobY > bobAmp * 0.6) {
+          const squash = clamp(bobVel * 0.6, 0, 0.2);
+          sx = 1.0 + squash;
+          sy = 1.0 - squash * 0.6;
+        }
+      }
+      ch.scaleX = ch.scaleX ? ch.scaleX + (sx - ch.scaleX) * 0.3 : sx;
+      ch.scaleY = ch.scaleY ? ch.scaleY + (sy - ch.scaleY) * 0.3 : sy;
+
+      if (ch.state === 'walking' && bobVel > 0.3 && ch.bobY > bobAmp * 0.7 && !ch.landed) {
+        spawnDust(ch.x, ch.y + DISP_SIZE * 0.45);
+        ch.landed = true;
+      }
+      if (ch.bobY < 0) ch.landed = false;
+
+      const drawX = ch.x;
+      const drawY = ch.y + ch.bobY;
+
+      ctx.save();
+      ctx.translate(drawX, drawY);
+      ctx.scale(ch.facing * ch.scaleX, ch.scaleY);
+      ctx.translate(-drawX, -drawY);
+
+      if (ch.img) {
+        ctx.drawImage(ch.img, drawX - DISP_SIZE / 2, drawY - DISP_SIZE / 2, DISP_SIZE, DISP_SIZE);
+      } else {
+        ctx.fillStyle = ch.color;
+        ctx.fillRect(drawX - DISP_SIZE / 2 + 4, drawY - DISP_SIZE / 2 + 4, DISP_SIZE - 8, DISP_SIZE - 8);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(ch.cls[0], drawX, drawY + 4);
+      }
+      ctx.restore();
+
+      // Name label
+      const labelY = ch.y + DISP_SIZE * 0.5 + 8;
+      ctx.font = '6px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(0,0,0,0.85)';
+      ctx.fillText(ch.label, ch.x + 1, labelY + 1);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(ch.label, ch.x, labelY);
+    });
+
+    drawVignette();
+    requestAnimationFrame(loop);
+  }
+
+  // ── Boot ─────────────────────────────────────────────────
+  async function boot() {
+    const results = await Promise.all(AGENTS.map(a => loadImage(a.src)));
+    characters = AGENTS.map((agent, i) => {
+      const { ok, img } = results[i];
+      if (!ok) console.warn(`[Lobby] Failed to load sprite for ${agent.name}`);
+      return makeCharacter(agent, ok ? img : null);
+    });
+    requestAnimationFrame(loop);
+  }
+
+  boot();
+
+})();
+</script>
+</body>
+</html>
